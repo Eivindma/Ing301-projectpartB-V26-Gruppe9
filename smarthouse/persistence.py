@@ -38,7 +38,8 @@ class SmartHouseRepository:
         """
         # TODO: START here! remove the following stub implementation and implement this function 
         #       by retrieving the data from the database via SQL `SELECT` statements.
-        return NotImplemented
+        
+        return sqlite3(f"SELECT * FROM measurements m, rooms r, devices d")
 
 
     def get_latest_reading(self, sensor) -> Optional[Measurement]:
@@ -47,7 +48,9 @@ class SmartHouseRepository:
         Returns None if the given object has no sensor readings.
         """
         # TODO: After loading the smarthouse, continue here
-        return NotImplemented
+        measurement = sqlite3(f"SELECT * FROM measurements m WHERE device = {sensor.id} ORDER BY ts LIMIT 1")
+        
+        return measurement
 
 
     def update_actuator_state(self, actuator):
@@ -58,7 +61,7 @@ class SmartHouseRepository:
         #       by creating a new table (`CREATE`), adding some data to it (`INSERT`) first, and then issue
         #       and SQL `UPDATE` statement. Remember also that you will have to call `commit()` on the `Connection`
         #       stored in the `self.conn` instance variable.
-        pass
+        
 
 
     # statistics
