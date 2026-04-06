@@ -31,6 +31,9 @@ class SmartHouseRepository:
     def reconnect(self):
         self.conn.close()
         self.conn = sqlite3.connect(self.file)
+        
+    def commit(self):
+        self.conn.commit()
 
     
     def load_smarthouse_deep(self):
@@ -42,48 +45,61 @@ class SmartHouseRepository:
         """
         # TODO: START here! remove the following stub implementation and implement this function 
         #       by retrieving the data from the database via SQL `SELECT` statements.
+        
+        
+        
         house = SmartHouse()
         repo = SmartHouseRepository("data/db.sql")
         cursor = repo.cursor()
         cursor.execute("SELECT DISTINCT floor FROM rooms ORDER BY floor")
         for (floor_level,) in cursor.fetchall():
             house.register_floor(floor_level)
-    
-        cursor.execute("""
+            
+        room_map = {}  
+        sql = """
             SELECT id, floor, area, name 
             FROM rooms 
             ORDER BY floor, id
-            """)
+            """
+    
+        cursor.execute(sql)
         result = cursor.fetchall()
         for row in result:
             room_id, floor_level, area, name = row
 
-            floor_list = house.get_floors
-            if floor_level
-        # Get the actual Floor object
-            floor_obj = next((f for f in house.get_floors() if f.level == floor_level), None)
-            
-            
-        
-            if floor_obj is None:
-            # Safety fallback (should not happen)
-                floor_obj = house.register_floor(floor_level)
-        
-            house.register_room(floor_obj, area, name)
-            
-            cursor.execute("""
-            SELECT d.id, d.room, d.kind, d.supplier, d.product 
-            FROM devices d
-            JOIN rooms r ON d.room_id = r.id
-            ORDER BY r.floor, r.id, d.id
-            """)
-
-    
+            floor_list = house.get_floors()
+            for floor in floor_list:
+                if floor_level == floor.level:
+                    room = house.register_room(floor, area, name)
+                    room_map[room_id] = room
+                    
+        sql = """
+            SELECT id, room, kind, category, supplier, product 
+            FROM devices 
+            ORDER BY room, id
+            """
+        cursor.execute(sql)
+        result = cursor.fetchall()
+        for row in result:
+            id, room_id, kind, category, supplier, product = row
+            r = room_map.get(room_id)  # use the map, not the nested loop
+            if r:
+                if category == "sensor":
+                    house.register_device(r, Sensor(id, product, supplier, kind))
+                elif category == "actuator":
+                    house.register_device(r, Actuator(id, product, supplier, kind))
+                        
+        cursor.execute("SELECT id, state FROM states")
+        for dev_id, state in cursor.fetchall():
+            device = house.get_device_by_id(dev_id)
+            if device and device.is_actuator():
+                device.state = False if (state is None or state == 0) else state
+                
         cursor.close()
         return house
 
 
-    def get_latest_reading(self, sensor) -> Optional[Measurement]:
+    def get_latest_reading(self, sensor: Device) -> Optional[Measurement]:
         """
         Retrieves the most recent sensor reading for the given sensor if available.
         Returns None if the given object has no sensor readings.
@@ -91,43 +107,31 @@ class SmartHouseRepository:
         # TODO: After loading the smarthouse, continue here
         repo = SmartHouseRepository("data/db.sql")
         cursor = repo.cursor()
+        if not sensor.is_sensor():
+            return None
+        else:
+            
 
-        sql = """
-            SELECT 
-            DATE(ts) AS day,
-            AVG(value) AS avg_temp
-            FROM measurements m
-            JOIN devices d ON m.device = d.id
-            WHERE d.room = ?
-            AND m.unit = '°C'
+            sql = """
+            SELECT value, ts, unit
+            FROM measurements
+            WHERE device = ?
+            ORDER BY ts DESC
+            LIMIT 1
             """
-        house = SmartHouse()
-        
-        params = [room.room_name]
+            
+            sensor_id = sensor.id
+            params = [sensor_id]
 
-        # Add date filters only when provided
-        if from_date is not None:
-            sql += " AND ts >= ?"
-            params.append(from_date)
+            cursor.execute(sql, params)
+            row = cursor.fetchone()
+            cursor.close()
+            
+            if row is None:
+                return None
+            value, ts, unit = row
+            return Measurement(ts, value, unit)
 
-        if until_date is not None:
-            sql += " AND ts <= ?"
-            params.append(until_date)
-
-            sql += """
-            GROUP BY day
-            ORDER BY day
-            """
-
-        cursor.execute(sql, params)
-        rows = cursor.fetchall()
-        cursor.close()
-        result = {}
-        for day, avg_temp in rows:
-            if avg_temp is not None:
-                result[day] = round(float(avg_temp), 2)   # round to 2 decimals
-
-        return measurement
 
 
     def update_actuator_state(self, actuator: Actuator):
@@ -143,26 +147,21 @@ class SmartHouseRepository:
 
         sql = """
             UPDATE states
-            state = ?
+            SET state = ?
             WHERE id = ?
             """
         
         
         params = [actuator.state , actuator.id]
+        
 
         cursor.execute(sql, params)
+        
         repo.commit()
         cursor.close()
 
-        return measurement
+        return actuator.state
         
-        
-        
-
-
-    # statistics
-
-    
     def calc_avg_temperatures_in_room(self, room : Room, from_date: Optional[str] = None, until_date: Optional[str] = None) -> dict:
         """Calculates the average temperatures in the given room for the given time range by
         fetching all available temperature sensor data (either from a dedicated temperature sensor 
@@ -178,40 +177,38 @@ class SmartHouseRepository:
         
         repo = SmartHouseRepository("data/db.sql")
         cursor = repo.cursor()
-
+        
         sql = """
-            SELECT 
-            DATE(ts) AS day,
-            AVG(value) AS avg_temp
+            SELECT DATE(m.ts) AS day, AVG(m.value) AS avg_temp
             FROM measurements m
             JOIN devices d ON m.device = d.id
-            WHERE d.room = ?
+            JOIN rooms r ON d.room = r.id
+            WHERE r.name = ?
             AND m.unit = '°C'
             """
+            
         params = [room.room_name]
-
-        # Add date filters only when provided
+        
+        
         if from_date is not None:
-            sql += " AND ts >= ?"
+            sql += " AND DATE(m.ts) >= ?"
             params.append(from_date)
 
         if until_date is not None:
-            sql += " AND ts <= ?"
+            sql += " AND DATE(m.ts) <= ?"
             params.append(until_date)
 
-            sql += """
-            GROUP BY day
-            ORDER BY day
-            """
-
+        sql += " GROUP BY day ORDER BY day"
+            
         cursor.execute(sql, params)
         rows = cursor.fetchall()
-        cursor.close()
         result = {}
         for day, avg_temp in rows:
             if avg_temp is not None:
-                result[day] = round(float(avg_temp), 2)   # round to 2 decimals
-
+                result[day] = round(float(avg_temp), 4)
+        
+                
+        cursor.close()
         return result
 
     
@@ -222,114 +219,38 @@ class SmartHouseRepository:
         the average recorded humidity in that room at that particular time.
         The result is a (possibly empty) list of number representing hours [0-23].
         """
-        
-        '''
-        # TODO: implement
-        room_id = getattr(room, 'id', room)
         repo = SmartHouseRepository("data/db.sql")
         cursor = repo.cursor()
-
-        sql = """
-            SELECT 
-            DATE(ts) AS day,
-            TIME(ts) AS time,
-            AVG(value) AS avg,
-            m.value,
-            d.room,
-            unit
-            FROM measurements m
-            JOIN devices d ON m.device = d.id
-            WHERE d.room = ?
-            AND day = 
-            AND m.unit = "%"
-            """
-        params = [room_id, date]
-
-        cursor.execute(sql, params)
-        rows = cursor.fetchall()
-        cursor.close()
-        result = {}
-        for time, avg_, value in rows:
-            if avg is not None:
-                result[day] = round(float(avg), 2)   # round to 2 decimals
-
-        return result
-        '''
         
-        repo = SmartHouseRepository("data/db.sql")
-        cursor = repo.cursor()
-
-    # ←←← THIS IS THE IMPORTANT FIX
-        room_id = getattr(room, 'id', room)   # works whether room is Room object or int
-
+        
         sql = """
-                WITH hourly_stats AS (
-                SELECT 
-                strftime('%H', ts) AS hour,
-                AVG(value) AS hour_avg_humidity
-                FROM measurements m
-                JOIN devices d ON m.device = d.id
-                WHERE d.room = ?
-                AND DATE(ts) = ?
-                AND m.unit = '%'
-                GROUP BY hour
-                HAVING COUNT(*) > 3
-        )
-            SELECT hour
+        WITH avg_humidity AS (
+            SELECT AVG(m.value) AS avg_val
             FROM measurements m
             JOIN devices d ON m.device = d.id
-            JOIN hourly_stats hs ON strftime('%H', m.ts) = hs.hour
-            WHERE d.room = ?
+            JOIN rooms r ON d.room = r.id
+            WHERE r.name = ?
             AND DATE(m.ts) = ?
             AND m.unit = '%'
-            AND m.value > hs.hour_avg_humidity
-            GROUP BY hour
-            HAVING COUNT(*) > 3
-            ORDER BY hour
-            """
+        )
+        SELECT CAST(strftime('%H', m.ts) AS INTEGER) AS hour
+        FROM measurements m
+        JOIN devices d ON m.device = d.id
+        JOIN rooms r ON d.room = r.id, avg_humidity
+        WHERE r.name = ?
+        AND DATE(m.ts) = ?
+        AND m.unit = '%'
+        AND m.value > avg_humidity.avg_val
+        GROUP BY hour
+        HAVING COUNT(*) > 3
+        ORDER BY hour
+        """
 
-        params = [room_id, date, room_id, date]
-
-        cursor.execute(sql, params)
+        cursor.execute(sql, [room.room_name, date, room.room_name, date])
         rows = cursor.fetchall()
         cursor.close()
 
-        # Convert hour strings to integers
-        result = [int(row[0]) for row in rows]
-
-        return result
+        return [row[0] for row in rows]
 
 
         
-house = SmartHouse()
-
-repo = SmartHouseRepository("data/db.sql")
-cursor = repo.cursor()
-cursor.execute("SELECT DISTINCT floor FROM rooms ORDER BY floor")
-for (floor_level,) in cursor.fetchall():
-    house.register_floor(floor_level)
-    
-    # 2. Register all rooms (now we can look up the Floor object)
-    cursor.execute("""
-        SELECT id, floor, area, name 
-        FROM rooms 
-        ORDER BY floor, id
-        """)
-    result = cursor.fetchall()
-for row in result:
-    room_id, floor_level, area, name = row
-        
-        # Get the actual Floor object
-    floor_obj = next((f for f in house.get_floors() if f.level == floor_level), None)
-        
-    if floor_obj is None:
-        # Safety fallback (should not happen)
-        floor_obj = house.register_floor(floor_level)
-        
-    house.register_room(floor_obj, area, name)
-    
-
-cursor.close()
-
-print(house.get_rooms())
-

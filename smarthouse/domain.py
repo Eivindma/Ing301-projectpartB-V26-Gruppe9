@@ -187,7 +187,7 @@ class SmartHouse:
         """
         result = 0.0
         for r in self.get_rooms():
-            result += r.room_size
+            result += r.area
         return result
 
 
